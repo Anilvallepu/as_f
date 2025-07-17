@@ -28,7 +28,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
   final List<Map<String, String>> leaveTypes = [
     {"id": "1", "label": "Sick Leave"},
     {"id": "2", "label": "Casual Leave"},
-    {"id": "3", "label": "Earned Leave"},
+    {"id": "3", "label": "Paid Leave"},
   ];
 
   Future<void> _selectDate(BuildContext context, TextEditingController controller) async {
