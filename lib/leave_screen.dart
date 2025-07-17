@@ -1,47 +1,51 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 class LeaveScreen extends StatefulWidget {
+  final String authToken;
   final String empId;
   final String empName;
-  final String authToken;
 
   const LeaveScreen({
     Key? key,
+    required this.authToken,
     required this.empId,
     required this.empName,
-    required this.authToken,
   }) : super(key: key);
 
   @override
-  State<LeaveScreen> createState() => _LeaveScreenState();
+  _LeaveScreenState createState() => _LeaveScreenState();
 }
 
 class _LeaveScreenState extends State<LeaveScreen> {
   final TextEditingController _fromDateController = TextEditingController();
   final TextEditingController _toDateController = TextEditingController();
   final TextEditingController _reasonController = TextEditingController();
+
   String? selectedLeaveType;
 
   final List<Map<String, String>> leaveTypes = [
-    {"id": "1", "label": "Sick Leave"},
-    {"id": "2", "label": "Casual Leave"},
-    {"id": "3", "label": "Paid Leave"},
+    {"id": "1", "label": "Casual Leave"},
+    {"id": "2", "label": "Sick Leave"},
+    {"id": "3", "label": "Earned  Leave"},
   ];
 
   Future<void> _selectDate(BuildContext context, TextEditingController controller) async {
+    DateTime initialDate = DateTime.now();
+    if (controller.text.isNotEmpty) {
+      initialDate = DateTime.tryParse(controller.text) ?? DateTime.now();
+    }
+
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(2024),
-      lastDate: DateTime(2026),
+      initialDate: initialDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
     );
+
     if (picked != null) {
-      setState(() {
-        controller.text = DateFormat('yyyy-MM-dd').format(picked);
-      });
+      controller.text = picked.toIso8601String().split('T')[0]; // Format: YYYY-MM-DD
     }
   }
 
@@ -54,7 +58,16 @@ class _LeaveScreenState extends State<LeaveScreen> {
       return;
     }
 
+    DateTime fromDate = DateTime.parse(_fromDateController.text);
+    DateTime toDate = DateTime.parse(_toDateController.text);
+
+    if (fromDate.isAfter(toDate)) {
+      _showDialog("Error", "From date cannot be after To date.");
+      return;
+    }
+
     final url = Uri.parse('https://hrm.eltrive.com/api/leaveapply');
+
     final body = {
       "auth_token": widget.authToken,
       "emp_id": widget.empId,
@@ -65,9 +78,11 @@ class _LeaveScreenState extends State<LeaveScreen> {
     };
 
     try {
-      final response = await http.post(url,
-          headers: {"Content-Type": "application/json"},
-          body: jsonEncode(body));
+      final response = await http.post(
+        url,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(body),
+      );
 
       final result = jsonDecode(response.body);
 
@@ -81,16 +96,16 @@ class _LeaveScreenState extends State<LeaveScreen> {
     }
   }
 
-  void _showDialog(String title, String msg) {
+  void _showDialog(String title, String content) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: Text(title),
-        content: Text(msg),
+        content: Text(content),
         actions: [
           ElevatedButton(
-            onPressed: () => Navigator.pop(context),
             child: const Text("OK"),
+            onPressed: () => Navigator.of(context).pop(),
           )
         ],
       ),
@@ -98,35 +113,56 @@ class _LeaveScreenState extends State<LeaveScreen> {
   }
 
   @override
+  void dispose() {
+    _fromDateController.dispose();
+    _toDateController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Apply for Leave')),
-      body: Padding(
+      appBar: AppBar(
+        title: const Text("Apply Leave"),
+      ),
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("Hello, ${widget.empName}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 20),
+            Align(
+              alignment: Alignment.center,
+              child: Text(
+                "Hello, ${widget.empName}",
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 24),
             TextField(
               controller: _fromDateController,
               readOnly: true,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: "From Date",
-                suffixIcon: const Icon(Icons.calendar_today),
+                suffixIcon: Icon(Icons.calendar_today),
               ),
               onTap: () => _selectDate(context, _fromDateController),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 16),
             TextField(
               controller: _toDateController,
               readOnly: true,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: "To Date",
-                suffixIcon: const Icon(Icons.calendar_today),
+                suffixIcon: Icon(Icons.calendar_today),
               ),
               onTap: () => _selectDate(context, _toDateController),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               decoration: const InputDecoration(labelText: "Leave Type"),
               items: leaveTypes.map((type) {
@@ -142,18 +178,36 @@ class _LeaveScreenState extends State<LeaveScreen> {
               },
               value: selectedLeaveType,
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 16),
             TextField(
               controller: _reasonController,
-              decoration: const InputDecoration(labelText: "Reason"),
+              decoration: const InputDecoration(
+                labelText: "Reason",
+              ),
               maxLines: 3,
             ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _submitLeave,
-              child: const Text("Apply Leave"),
-              style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(45)),
+            const SizedBox(height: 24),
+            Center(
+              child: ElevatedButton(
+                onPressed: _submitLeave,
+                child: const Text(
+                  "Submit Leave",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold, // bold text
+                    color: Colors.white,         // white text for contrast
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue, // full blue background
+                  foregroundColor: Colors.white, // ripple/splash color
+                  shadowColor: Colors.blue,     // blue shadow
+                  elevation: 4,                 // slight elevation
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  textStyle: const TextStyle(fontSize: 16),
+                ),
+              ),
             )
+
           ],
         ),
       ),
