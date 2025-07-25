@@ -23,12 +23,15 @@ class _LeaveScreenState extends State<LeaveScreen> {
   final TextEditingController _toDateController = TextEditingController();
   final TextEditingController _reasonController = TextEditingController();
 
-  String? selectedLeaveType;
+  String? selectedLeaveTypeId;
+  bool _isSubmitting = false;
+
+  final Set<String> _submittedLeaves = {};
 
   final List<Map<String, String>> leaveTypes = [
     {"id": "1", "label": "Casual Leave"},
-    {"id": "2", "label": "Sick Leave"},
-    {"id": "3", "label": "Earned  Leave"},
+    {"id": "2", "label": "Comp Off Leave"},
+    {"id": "3", "label": "Earned Leave"},
   ];
 
   Future<void> _selectDate(BuildContext context, TextEditingController controller) async {
@@ -40,7 +43,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
     final DateTime? picked = await showDatePicker(
       context: context,
       initialDate: initialDate,
-      firstDate: DateTime(2020),
+      firstDate: DateTime.now(), // 👈 prevents selecting past dates
       lastDate: DateTime(2100),
     );
 
@@ -49,10 +52,14 @@ class _LeaveScreenState extends State<LeaveScreen> {
     }
   }
 
+
+
   Future<void> _submitLeave() async {
+    if (_isSubmitting) return;
+
     if (_fromDateController.text.isEmpty ||
         _toDateController.text.isEmpty ||
-        selectedLeaveType == null ||
+        selectedLeaveTypeId == null ||
         _reasonController.text.isEmpty) {
       _showDialog("Error", "Please fill all fields.");
       return;
@@ -65,15 +72,31 @@ class _LeaveScreenState extends State<LeaveScreen> {
       _showDialog("Error", "From date cannot be after To date.");
       return;
     }
+    if (fromDate.isBefore(DateTime.now().subtract(const Duration(days: 1))) ||
+        toDate.isBefore(DateTime.now().subtract(const Duration(days: 1)))) {
+      _showDialog("Invalid Date", "You cannot apply for leave in the past.");
+      return;
+    }
+    final String leaveKey =
+        '${widget.empId}_${_fromDateController.text}_${_toDateController.text}_$selectedLeaveTypeId';
+
+    if (_submittedLeaves.contains(leaveKey)) {
+      _showDialog("Duplicate", "Leave already submitted for these dates.");
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+    });
 
     final url = Uri.parse('https://hrm.eltrive.com/api/leaveapply');
 
     final body = {
       "auth_token": widget.authToken,
       "emp_id": widget.empId,
+      "leave_type_id": selectedLeaveTypeId!,
       "from_date": _fromDateController.text,
       "to_date": _toDateController.text,
-      "leave_type": selectedLeaveType!,
       "reason": _reasonController.text,
     };
 
@@ -87,12 +110,17 @@ class _LeaveScreenState extends State<LeaveScreen> {
       final result = jsonDecode(response.body);
 
       if (result["status"] == "success") {
-        _showDialog("Success", result["message"]);
+        _submittedLeaves.add(leaveKey);
+        _showDialog("Success", result["message"] ?? "Leave applied successfully");
       } else {
         _showDialog("Failed", result["message"] ?? "Something went wrong");
       }
     } catch (e) {
       _showDialog("Error", "Could not apply leave. Try again later.");
+    } finally {
+      setState(() {
+        _isSubmitting = false;
+      });
     }
   }
 
@@ -141,7 +169,6 @@ class _LeaveScreenState extends State<LeaveScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 24),
             TextField(
               controller: _fromDateController,
@@ -173,10 +200,10 @@ class _LeaveScreenState extends State<LeaveScreen> {
               }).toList(),
               onChanged: (value) {
                 setState(() {
-                  selectedLeaveType = value;
+                  selectedLeaveTypeId = value;
                 });
               },
-              value: selectedLeaveType,
+              value: selectedLeaveTypeId,
             ),
             const SizedBox(height: 16),
             TextField(
@@ -189,25 +216,26 @@ class _LeaveScreenState extends State<LeaveScreen> {
             const SizedBox(height: 24),
             Center(
               child: ElevatedButton(
-                onPressed: _submitLeave,
-                child: const Text(
+                onPressed: _isSubmitting ? null : _submitLeave,
+                child: _isSubmitting
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text(
                   "Submit Leave",
                   style: TextStyle(
-                    fontWeight: FontWeight.bold, // bold text
-                    color: Colors.white,         // white text for contrast
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
                   ),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue, // full blue background
-                  foregroundColor: Colors.white, // ripple/splash color
-                  shadowColor: Colors.blue,     // blue shadow
-                  elevation: 4,                 // slight elevation
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                  shadowColor: Colors.blue,
+                  elevation: 4,
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   textStyle: const TextStyle(fontSize: 16),
                 ),
               ),
-            )
-
+            ),
           ],
         ),
       ),

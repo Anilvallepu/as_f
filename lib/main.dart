@@ -83,7 +83,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => isLoading = true);
 
-    try {
+   try {
       String deviceId = await getDeviceId();
       Position? position = await getLocation();
 
@@ -102,7 +102,15 @@ class _LoginScreenState extends State<LoginScreen> {
         }),
       );
 
-      final json = jsonDecode(response.body);
+      print("Login Response (${response.statusCode}): ${response.body}");
+
+      late Map<String, dynamic> json;
+      try {
+        json = jsonDecode(response.body);
+      } catch (e) {
+        showSnackbar("Invalid server response");
+        return;
+      }
 
       if (response.statusCode == 200 && json['status'] == "success") {
         final empName = json['emp_name'] ?? "Employee";
@@ -120,10 +128,12 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         );
       } else {
-        showSnackbar(json['message'] ?? "Login failed");
+        final errorMessage = json['message'] ?? "Invalid credentials or login failed";
+        showSnackbar(errorMessage);
       }
     } catch (e) {
-      showSnackbar("Error: $e");
+      showSnackbar("Login error: $e");
+
     } finally {
       setState(() => isLoading = false);
     }
@@ -132,11 +142,12 @@ class _LoginScreenState extends State<LoginScreen> {
   void showSnackbar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Text(
+          message,
+          style: const TextStyle(color: Colors.white), // White text
+        ),
+        backgroundColor: Colors.red, // Optional: red background for error
         behavior: SnackBarBehavior.floating,
-        backgroundColor: Colors.grey[900],
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: const Duration(seconds: 3),
       ),
     );
   }

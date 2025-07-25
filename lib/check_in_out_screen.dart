@@ -1,14 +1,19 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'leave_screen.dart';
 import 'payslip_screen.dart';
 import 'expenses_screen.dart';
 import 'more_screen.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 class CheckInOutScreen extends StatefulWidget {
   final String empName;
@@ -43,8 +48,13 @@ class _CheckInOutScreenState extends State<CheckInOutScreen> {
   DateTime? sessionStart;
 
   @override
+  @override
   void initState() {
     super.initState();
+
+    // Ask notification permission on screen load (Android 13+)
+    _requestNotificationPermission();
+
     updateTime();
     clockTimer = Timer.periodic(const Duration(seconds: 1), (_) => updateTime());
 
@@ -59,22 +69,175 @@ class _CheckInOutScreenState extends State<CheckInOutScreen> {
         isAllowedToCheckOut = false;
       }
       setState(() {});
-      fetchStatus(); // Fetch from server after local UI is ready
+      fetchStatus();
     });
+
+  }
+  StreamSubscription<Position>? positionStream;
+
+  Future<void> _requestNotificationPermission() async {
+    if (await Permission.notification.isGranted) return;
+
+    var status = await Permission.notification.request();
+
+    if (!status.isGranted) {
+      if (status.isPermanentlyDenied) {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text("Notification Permission Required"),
+            content: const Text(
+              "Please enable notification permission from app settings to allow check-in notifications.",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Cancel"),
+              ),
+              TextButton(
+                onPressed: () {
+                  openAppSettings();
+                  Navigator.pop(context);
+                },
+                child: const Text("Open Settings"),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+  FlutterLocalNotificationsPlugin();
+
+  bool hasShownOutOfBoundsNotification = false;
+
+  Future<void> initializeNotifications() async {
+    const AndroidInitializationSettings initializationSettingsAndroid =
+    AndroidInitializationSettings('@mipmap/ic_launcher');
+
+    const InitializationSettings initializationSettings = InitializationSettings(
+      android: initializationSettingsAndroid,
+    );
+
+    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+  }
+
+  Future<void> showOutOfLocationNotification() async {
+    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+    AndroidNotificationDetails(
+      'location_channel',
+      'Location Alerts',
+      channelDescription: 'Alerts when user goes out of bounds',
+      importance: Importance.high,
+      priority: Priority.high,
+      ticker: 'ticker',
+    );
+
+    const NotificationDetails platformChannelSpecifics =
+    NotificationDetails(android: androidPlatformChannelSpecifics);
+
+    await flutterLocalNotificationsPlugin.show(
+      0,
+      'Location Alert',
+      'You are out of the allowed location!',
+      platformChannelSpecifics,
+      payload: 'out_of_location',
+    );
+  }
+
+  Future<void> _startLocationMonitoring() async {
+    if (!await Permission.locationAlways.isGranted) {
+      await Permission.locationAlways.request();
+    }
+
+    await initializeNotifications();
+
+    const double officeLatitude = 17.502635;
+    const double officeLongitude = 78.352666;
+    const double radiusInMeters = 100;
+
+    final service = FlutterBackgroundService();
+
+    await service.startService();
+    service.invoke("setAsForeground");
+
+    positionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 20,
+      ),
+    ).listen((position) async {
+      double distance = Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        officeLatitude,
+        officeLongitude,
+      );
+
+      print('Current Distance from office: $distance meters');
+
+      if (distance > radiusInMeters) {
+        if (!hasShownOutOfBoundsNotification) {
+          await showOutOfLocationNotification();
+          hasShownOutOfBoundsNotification = true;
+        }
+      } else {
+        hasShownOutOfBoundsNotification = false; // Reset if back in range
+      }
+    });
+  }
+
+  void _stopLocationMonitoring() {
+    positionStream?.cancel();
+  }
+
+  Future<void> initializeService() async {
+    final service = FlutterBackgroundService();
+
+    await service.configure(
+      androidConfiguration: AndroidConfiguration(
+        onStart: onStart,
+        isForegroundMode: true,
+        autoStart: true,
+        notificationChannelId: 'location_channel',
+        initialNotificationTitle: 'Tracking Location',
+        initialNotificationContent: 'Background service is running',
+      ),
+      iosConfiguration: IosConfiguration(
+        autoStart: true,
+        onForeground: onStart,
+        onBackground: onIosBackground,
+      ),
+    );
+  }
+
+  void onStart(ServiceInstance service) {
+    DartPluginRegistrant.ensureInitialized();
+
+    if (service is AndroidServiceInstance) {
+      service.on("setAsForeground").listen((event) {
+        service.setAsForegroundService();
+      });
+
+      service.on("stopService").listen((event) {
+        service.stopSelf();
+      });
+    }
+  }
+
+  @pragma('vm:entry-point')
+  Future<bool> onIosBackground(ServiceInstance service) async {
+    DartPluginRegistrant.ensureInitialized();
+    return true;
   }
 
   @override
   void dispose() {
-    clockTimer.cancel();
+    clockTimer?.cancel();
     workingTimer?.cancel();
+    positionStream?.cancel();
     super.dispose();
-  }
-
-  void updateTime() {
-    final now = DateTime.now();
-    setState(() {
-      currentTime = DateFormat('hh:mm:ss a').format(now);
-    });
   }
 
   Future<Position> _getCurrentLocation() async {
@@ -96,6 +259,127 @@ class _CheckInOutScreenState extends State<CheckInOutScreen> {
       desiredAccuracy: LocationAccuracy.high,
     );
   }
+
+  Future<void> handleCheckIn() async {
+    if (await Permission.notification.isDenied ||
+        await Permission.notification.isPermanentlyDenied) {
+      final status = await Permission.notification.request();
+      if (!status.isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text("Notification permission is required for background tracking")),
+        );
+        return;
+      }
+    }
+
+    final now = DateTime.now().toUtc().toIso8601String();
+    final service = FlutterBackgroundService();
+    await service.startService();
+    _startLocationMonitoring();
+
+    try {
+      final position = await _getCurrentLocation();
+      final response = await http.post(
+        Uri.parse("https://hrm.eltrive.com/Api/checkin"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "auth_token": widget.authToken,
+          "emp_id": widget.empId,
+          "latitude": position.latitude.toString(),
+          "longitude": position.longitude.toString(),
+          "timestamp": now,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 && data['status'] == 'success') {
+        final cumTimeStr = data['cumulative_working_hours'] ?? "00:00:00";
+        workingDuration = _parseDuration(cumTimeStr);
+
+        sessionStart = DateTime.now();
+        checkInTime = DateFormat('hh:mm:ss a').format(sessionStart!);
+
+        isCheckedIn = true;
+        isAllowedToCheckIn = false;
+        isAllowedToCheckOut = true;
+        await _saveCheckInState(true);
+
+        setState(() {
+          totalWorkingHours = _formatDuration(workingDuration);
+        });
+
+        startWorkingTimer();
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Check-In Successful")),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Check-In Failed: ${data['message']}")),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Check-In Error: $e")),
+      );
+    }
+  }
+
+  Future<void> handleCheckOut() async {
+    final now = DateTime.now().toUtc().toIso8601String();
+
+    final service = FlutterBackgroundService();
+    service.invoke("stopService");
+    _stopLocationMonitoring();
+
+    try {
+      final position = await _getCurrentLocation();
+      final response = await http.post(
+        Uri.parse("https://hrm.eltrive.com/Api/checkout"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "auth_token": widget.authToken,
+          "emp_id": widget.empId,
+          "latitude": position.latitude.toString(),
+          "longitude": position.longitude.toString(),
+          "timestamp": now,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 && data['status'] == 'success') {
+        stopWorkingTimer();
+        final nowLocal = DateTime.now();
+
+        setState(() {
+          checkOutTime = DateFormat('hh:mm:ss a').format(nowLocal);
+          totalWorkingHours = _formatDuration(workingDuration);
+          isCheckedIn = false;
+          isAllowedToCheckIn = true;
+          isAllowedToCheckOut = false;
+        });
+
+        await _saveCheckInState(false);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Check-Out Successful")),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Check-Out Failed: ${data['message']}")),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Check-Out Error: $e")),
+      );
+    }
+  }
+
+
 
   Future<void> fetchStatus() async {
     try {
@@ -152,106 +436,6 @@ class _CheckInOutScreenState extends State<CheckInOutScreen> {
     }
   }
 
-  Future<void> handleCheckIn() async {
-    final now = DateTime.now().toUtc().toIso8601String();
-
-    try {
-      final position = await _getCurrentLocation();
-      final response = await http.post(
-        Uri.parse("https://hrm.eltrive.com/Api/checkin"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "auth_token": widget.authToken,
-          "emp_id": widget.empId,
-          "latitude": position.latitude.toString(),
-          "longitude": position.longitude.toString(),
-          "timestamp": now,
-        }),
-      );
-
-      final data = jsonDecode(response.body);
-
-      if (response.statusCode == 200 && data['status'] == 'success') {
-        final cumTimeStr = data['cumulative_working_hours'] ?? "00:00:00";
-        workingDuration = _parseDuration(cumTimeStr);
-
-        sessionStart = DateTime.now();
-        checkInTime = DateFormat('hh:mm:ss a').format(sessionStart!);
-
-        isCheckedIn = true;
-        isAllowedToCheckIn = false;
-        isAllowedToCheckOut = true;
-        await _saveCheckInState(true);
-
-        setState(() {
-          totalWorkingHours = _formatDuration(workingDuration);
-        });
-
-        startWorkingTimer();
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Check-In Successful")),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Check-In Failed: ${data['message']}")),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Check-In Error: $e")),
-      );
-    }
-  }
-
-  Future<void> handleCheckOut() async {
-    final now = DateTime.now().toUtc().toIso8601String();
-
-    try {
-      final position = await _getCurrentLocation();
-      final response = await http.post(
-        Uri.parse("https://hrm.eltrive.com/Api/checkout"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "auth_token": widget.authToken,
-          "emp_id": widget.empId,
-          "latitude": position.latitude.toString(),
-          "longitude": position.longitude.toString(),
-          "timestamp": now,
-        }),
-      );
-
-      final data = jsonDecode(response.body);
-
-      if (response.statusCode == 200 && data['status'] == 'success') {
-        stopWorkingTimer();
-        final nowLocal = DateTime.now();
-
-        setState(() {
-          checkOutTime = DateFormat('hh:mm:ss a').format(nowLocal);
-          totalWorkingHours = _formatDuration(workingDuration);
-          isCheckedIn = false;
-          isAllowedToCheckIn = true;
-          isAllowedToCheckOut = false;
-        });
-
-        await _saveCheckInState(false);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Check-Out Successful")),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Check-Out Failed: ${data['message']}")),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Check-Out Error: $e")),
-      );
-    }
-  }
-
   void startWorkingTimer() {
     workingTimer?.cancel();
     workingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -265,6 +449,13 @@ class _CheckInOutScreenState extends State<CheckInOutScreen> {
   void stopWorkingTimer() {
     workingTimer?.cancel();
     workingTimer = null;
+  }
+
+  void updateTime() {
+    final now = DateTime.now();
+    setState(() {
+      currentTime = DateFormat('hh:mm:ss a').format(now);
+    });
   }
 
   Future<void> _saveCheckInState(bool isCheckedIn) async {
